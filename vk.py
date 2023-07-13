@@ -1,4 +1,4 @@
-from sql.SQL import *
+from sql.SQL_scripts import *
 import json
 import requests
 from tqdm import tqdm
