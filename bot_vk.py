@@ -115,4 +115,4 @@ for event in longpoll.listen():
                         event.user_id, f'{first_name} {last_name}\n{page}', None, photos)
             else:
                 write_msg(event.user_id, "Не поняла вашего ответа...")                                
-            
+                write_msg(event.user_id, "Не поняла вашего ответа...")
