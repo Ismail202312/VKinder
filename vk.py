@@ -1,62 +1,120 @@
-from sql.SQL import *
-import json
-import requests
-from tqdm import tqdm
-from tokens import user_token
+from vk_api.longpoll import VkLongPoll, VkEventType
+from vk_api.keyboard import VkKeyboard, VkKeyboardColor
+from tokens import community_token, user_token
+from sql.SQL_scripts import get_favorite_data, push_user_data_in_base, push_pair_in_favorite, get_pair_data
+from parser_vk import VK_Parse
+import vk_api
+import random
 
 
-class VK_Parse:
-    def __init__(self, access_token, vk_user_id, gender, age, city):  # Инициализация входных параметров
-    # Инициализация входных параметров
-    def __init__(self, access_token, vk_user_id, gender, age, city):
-        self.access_token = access_token
-        self.vk_user_id = vk_user_id
-        self.age = age
-@@ -34,29 +34,29 @@ def parse(self):
-                  'v': '5.131'
-                  }
-        response = requests.get(
-                'https://api.vk.com/method/users.search', params=params)
-            'https://api.vk.com/method/users.search', params=params)
-        result = response.json()
-        try:
-            if result['response']['count'] != 0:
-                res = result['response']['items']
-            # Прогресс-бар каждой итерации отображается в терминале
-                for item in tqdm(res, desc='Идет поиск...'):
-                    
+vk = vk_api.VkApi(token=community_token)
+longpoll = VkLongPoll(vk)
 
-                    profile_url = f"https://vk.com/id{item['id']}"
-                    photos = self.get_photos(item['id'])
-                    if photos:
-                        first_name = item['first_name']
-                        last_name = item['last_name']
-                        city = self.city
-                        # Запись в базу данных при каждой итерации
-                        push_pair_data_in_base(self.vk_user_id, first_name, last_name, city, profile_url, photos)
-                        push_pair_data_in_base(
-                            self.vk_user_id, first_name, last_name, city, profile_url, photos)
-                return 'Всё готово!'
-            else:
-                raise Exception
-        
-
-        except Exception:
-            return f'&#10060; Ошибка:\nОдин или несколько параметров указаны неверно.\nПопробуйте ещё раз.'
+answer_list = ['Привет!', 'Приветствую!', 'Здравствуйте!', 'Здарова!']
+hello_list = ['Привет', 'привет', 'Салам',
+              'салам', 'Хай', 'хай', 'Здарова', 'здарова',
+              'Начать', 'Start', 'Начать поиск']
 
 
-    def get_photos(self, user_id):
-        '''
-@@ -76,10 +76,11 @@ def get_photos(self, user_id):
-            photo_urls = []
-            if 'response' in photos_result:
-                photos = photos_result['response']['items']
-                sorted_photos = sorted(photos, key=lambda x: x.get('likes', {}).get('count', 0), reverse=True)  # Сортировка по лайкам
-                sorted_photos = sorted(photos, key=lambda x: x.get('likes', {}).get(
-                    'count', 0), reverse=True)  # Сортировка по лайкам
-                for photo in sorted_photos[:3]:
-                    photo_urls.append(photo['sizes'][-1]['url'])
-            return photo_urls
-        except Exception as e:
-            print(f"Ошибка при получении фотографий: {e}")
-            return []
+def write_msg(user_id, message, keyboard=None, attachment=None):
+    parametrs = {'user_id': user_id,
+                 'message': message,
+                 'random_id': random.randrange(10 ** 7),
+                 "attachment": attachment
+                 }
+
+    if keyboard is not None:
+        parametrs['keyboard'] = keyboard.get_keyboard()
+    else:
+        parametrs = parametrs
+
+    vk.method('messages.send', parametrs)
+
+def main():
+    for event in longpoll.listen():
+        if event.type == VkEventType.MESSAGE_NEW:
+
+            if event.to_me:
+                request = event.text
+                filter_list = event.text.split(', ')
+                chat_button = VkKeyboard(inline=True)  # Инициализация кнопок
+                if request == 'Начать' or request in hello_list:
+                    write_msg(
+                        event.user_id, f'{random.choice(answer_list)}')  # Приветствие от бота пользователю
+                    write_msg(
+                        event.user_id, 'Подскажи, кого мы ищем?&#128527;\nУкажи через запятую пол, возраст и город.\nПример: Мужской, 26, Москва')
+
+                # Данное условие ГРУБО даёт понять, что боту переданы параметры для поиска
+                elif len(filter_list) == 3:
+                    gender = filter_list[0].lower()
+                    age = filter_list[1]
+                    city = filter_list[2].lower()
+                    write_msg(
+                        event.user_id, f'&#128269; Начинаю поиск по параметрам: {gender}, {age}, {city}.\nЭто займет менее минуты...')
+
+                    vk_parser = VK_Parse(
+                        user_token, event.user_id, gender, age, city)
+                    parser_data = vk_parser.parse()  # Начало парсинга совпадений
+                    bad_answer = '&#10060; Ошибка:\nОдин или несколько параметров указаны неверно.\nПопробуйте ещё раз.'
+                    if parser_data == bad_answer:
+                        write_msg(event.user_id, bad_answer)
+                    else:
+                        # Метод для записи параметров поиска в базу данных users
+                        push_user_data_in_base(event.user_id, gender, age, city)
+                        chat_button.add_button(
+                            'Давай посмотрим', VkKeyboardColor.POSITIVE)
+                        chat_button.add_button('Нет', VkKeyboardColor.NEGATIVE)
+                        write_msg(
+                            event.user_id, f'{parser_data} Начинаем?', chat_button)
+
+                elif request == 'Давай посмотрим':
+                    chat_button.add_button('Нравится', VkKeyboardColor.POSITIVE)
+                    chat_button.add_button('Дальше', VkKeyboardColor.NEGATIVE)
+                    chat_button.add_button('Стоп', VkKeyboardColor.SECONDARY)
+                    # Метод, возвращающий совпадения из базы данных
+                    pair_list = get_pair_data(event.user_id)
+                    for item in pair_list:
+                        # Присваиваем переменные
+                        id, first_name, last_name, page, photos = item[0], item[1], item[2], item[3], item[4]
+                        # Убираем срезом фигурные скобки после селекта из базы
+                        photos = photos[1: -1]
+                        write_msg(
+                            event.user_id, f'{first_name} {last_name}\n{page}', chat_button, photos)
+                        for event in longpoll.listen():  # Новый лонг-пулл для получения реакции от пользователя
+                            if event.type == VkEventType.MESSAGE_NEW and event.to_me:
+                                request = event.text
+                                if request == 'Нравится':
+                                    # Метод записи избранных в таблицу favorite
+                                    push_pair_in_favorite(event.user_id, id)
+                                    break
+
+                                elif request == 'Дальше':  # Переход к next итерации
+                                    break
+
+                                elif request == 'Стоп':  # Остановка итератора и выход из цикла for
+                                    break
+                            elif request == 'Стоп':
+                                break
+                        if request == 'Стоп':
+                            menu_button = VkKeyboard(inline=True)
+                            menu_button.add_button(
+                                'Начать поиск', VkKeyboardColor.POSITIVE)
+                            menu_button.add_button(
+                                'Избранные', VkKeyboardColor.SECONDARY)
+                            write_msg(event.user_id, 'Что делаем?', menu_button)
+                            break
+                elif request == 'Нет':
+                    write_msg(event.user_id, 'Что делаем?', menu_button)
+
+                elif request == 'Избранные':  # Конструкция для импорта данных из базы
+                    favorite_data = get_favorite_data(event.user_id)
+                    for item in favorite_data:
+                        first_name, last_name, page, photos = item[0], item[1], item[2], item[3]
+                        photos = photos[1: -1]
+                        write_msg(
+                            event.user_id, f'{first_name} {last_name}\n{page}', None, photos)
+                else:
+                    write_msg(event.user_id, "Не поняла вашего ответа...")
+
+if __name__ == "__main__":
+    main()
